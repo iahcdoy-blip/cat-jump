@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="แมวกระโดด">
+<!-- เรียกใช้ Manifest และ Icon -->
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100' style='background:%23FFA000'><text y='70' x='15' font-size='70'>🐱</text></svg>">
+<title>แมวกระโดด 🐱</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; -webkit-user-select:none; user-select:none; -webkit-tap-highlight-color:transparent; touch-action:manipulation; }
+  body { background:#0f0f1e; font-family:'Segoe UI',-apple-system,BlinkMacSystemFont,sans-serif; overflow:hidden; height:100vh; display:flex; align-items:center; justify-content:center; }
+  #gameWrap { position:relative; width:100%; max-width:480px; height:100%; max-height:100vh; overflow:hidden; }
+  canvas { width:100%; height:100%; display:block; background:linear-gradient(#64B5F6,#E1F5FE); }
+  
+  #hud { position:absolute; top:calc(env(safe-area-inset-top, 0px) + 12px); left:12px; right:12px; display:flex; justify-content:space-between; pointer-events:none; z-index:5; }
+  .badge { background:rgba(0,0,0,.5); backdrop-filter:blur(6px); color:#fff; padding:6px 14px; border-radius:20px; font-size:16px; font-weight:bold; }
+  #frenzyBar { position:absolute; top:calc(env(safe-area-inset-top, 0px) + 55px); left:20px; right:20px; height:8px; background:rgba(255,255,255,.3); border-radius:4px; overflow:hidden; display:none; z-index:5; }
+  #frenzyFill { width:100%; height:100%; background:linear-gradient(90deg, #FF1744, #FFEA00, #00E676, #00E5FF, #D500F9); }
+
+  #overlay { position:absolute; inset:0; background:rgba(15,15,30,.85); backdrop-filter:blur(8px); display:flex; flex-direction:column; align-items:center; justify-content:center; z-index:10; color:#fff; text-align:center; padding:24px; }
+  #overlay.hidden { display:none; }
+  #overlay h1 { font-size:38px; margin-bottom:8px; text-shadow:0 3px 12px rgba(255,152,0,.5); }
+  #overlay p { font-size:15px; opacity:.92; margin-bottom:24px; line-height:1.6; }
+  #overlay button { background:linear-gradient(135deg,#FF9800,#FF5722); border:none; color:#fff; font-size:20px; font-weight:bold; padding:15px 45px; border-radius:50px; box-shadow:0 6px 20px rgba(255,87,34,.5); cursor:pointer; }
+
+  #touchControls { position:absolute; bottom:calc(env(safe-area-inset-bottom, 0px) + 15px); left:15px; right:15px; display:flex; justify-content:space-between; z-index:6; }
+  .touch-btn { width:48%; background:rgba(255,255,255,.2); backdrop-filter:blur(4px); border:2px solid rgba(255,255,255,.3); border-radius:18px; color:#fff; font-size:18px; font-weight:bold; padding:16px 0; text-align:center; }
+  .touch-btn:active { background:rgba(255,255,255,.45); }
+</style>
+</head>
+<body>
+<div id="gameWrap">
+  <canvas id="c"></canvas>
+  <div id="hud">
+    <div class="badge">⭐ <span id="score">0</span> | 🐟 <span id="fishCount">0</span></div>
+    <div class="badge">🏆 <span id="best">0</span></div>
+  </div>
+  <div id="frenzyBar"><div id="frenzyFill"></div></div>
+
+  <div id="touchControls">
+    <div class="touch-btn" id="btnSlide">📦 มุดกล่อง</div>
+    <div class="touch-btn" id="btnJump">🚀 โดด (2 จังหวะ)</div>
+  </div>
+
+  <div id="overlay">
+    <h1 id="ovTitle">🐱 แมวกระโดด DX</h1>
+    <p id="ovDesc">
+      • <b>กระโดดซ้ำกลางอากาศ</b> = ดับเบิ้ลจัมพ์ 🚀🚀<br>
+      • <b>ปุ่มมุดกล่อง</b> = สไลด์หลบนกบินต่ำ 📦<br>
+      • เก็บ 🐟 ได้แต้ม / เก็บ 🌿 <b>กัญชาแมว</b> ชนแหลก 5 วิ!
+    </p>
+    <button id="startBtn">เริ่มลุย!</button>
+  </div>
+</div>
+
+<script>
+// ลงทะเบียน Service Worker สำหรับโหลดออฟไลน์
+if('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('./sw.js').then(() => console.log("Service Worker Registered!"));
+}
+
+function loadBest(){ try { return +(localStorage.getItem('catBest')||0); } catch(e){ return 0; } }
+function saveBest(v){ try { localStorage.setItem('catBest', v); } catch(e){} }
+
+const c = document.getElementById('c'), ctx = c.getContext('2d');
+let W, H, groundY;
+function resize(){
+  const dpr = window.devicePixelRatio || 1;
+  W = c.clientWidth; H = c.clientHeight;
+  c.width = W * dpr; c.height = H * dpr;
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  groundY = H * 0.76;
+}
+resize(); addEventListener('resize', resize);
+
+let cat, obstacles, items, particles, score, fishes=0, best = loadBest(), speed, playing=false, spawnTimer, itemTimer, time=0;
+document.getElementById('best').textContent = best;
+
+let AC = null;
+function initAudio(){
+  try{
+    if(!AC) AC = new (window.AudioContext||window.webkitAudioContext)();
+    if(AC.state === 'suspended') AC.resume();
+  }catch(e){}
+}
+function sound(type){
+  if(!AC) return;
+  try{
+    const o = AC.createOscillator(), g = AC.createGain();
+    const t = AC.currentTime;
+    o.connect(g); g.connect(AC.destination);
+    if(type==='jump'){
+      o.frequency.setValueAtTime(400, t); o.frequency.exponentialRampToValueAtTime(750, t+0.12);
+      g.gain.setValueAtTime(0.12, t); g.gain.linearRampToValueAtTime(0.01, t+0.12);
+      o.start(t); o.stop(t+0.12);
+    } else if(type==='djump'){
+      o.frequency.setValueAtTime(650, t); o.frequency.exponentialRampToValueAtTime(1100, t+0.15);
+      g.gain.setValueAtTime(0.15, t); g.gain.linearRampToValueAtTime(0.01, t+0.15);
+      o.start(t); o.stop(t+0.15);
+    } else if(type==='fish'){
+      o.type='triangle'; o.frequency.setValueAtTime(800, t); o.frequency.setValueAtTime(1200, t+0.06);
+      g.gain.setValueAtTime(0.15, t); g.gain.linearRampToValueAtTime(0.01, t+0.14);
+      o.start(t); o.stop(t+0.14);
+    } else if(type==='catnip'){
+      o.type='sawtooth'; o.frequency.setValueAtTime(300, t); o.frequency.linearRampToValueAtTime(1200, t+0.35);
+      g.gain.setValueAtTime(0.2, t); g.gain.linearRampToValueAtTime(0.01, t+0.35);
+      o.start(t); o.stop(t+0.35);
+    } else if(type==='smash'){
+      o.type='square'; o.frequency.setValueAtTime(160, t); o.frequency.linearRampToValueAtTime(40, t+0.1);
+      g.gain.setValueAtTime(0.25, t); g.gain.linearRampToValueAtTime(0.01, t+0.1);
+      o.start(t); o.stop(t+0.1);
+    } else if(type==='hit'){
+      o.type='sawtooth'; o.frequency.setValueAtTime(240, t); o.frequency.linearRampToValueAtTime(60, t+0.3);
+      g.gain.setValueAtTime(0.3, t); g.gain.linearRampToValueAtTime(0.01, t+0.3);
+      o.start(t); o.stop(t+0.3);
+    }
+  }catch(e){}
+}
+
+function newCat(){ 
+  return { 
+    x:70, y:groundY, vy:0, w:50, h:42, 
+    onGround:true, jumpsLeft:2, sliding:false, 
+    rot:0, frenzyTimer:0 
+  }; 
+}
+
+function start(){
+  cat = newCat(); obstacles=[]; items=[]; particles=[]; 
+  score=0; fishes=0; speed=5.5; spawnTimer=60; itemTimer=100; playing=true; time=0;
+  document.getElementById('overlay').classList.add('hidden');
+  document.getElementById('score').textContent = 0;
+  document.getElementById('fishCount').textContent = 0;
+}
+
+function jump(){
+  initAudio();
+  if(!playing) return;
+  if(cat.sliding) stopSlide();
+  if(cat.jumpsLeft > 0){
+    if(cat.onGround){
+      cat.vy = -14.5; cat.onGround=false; cat.jumpsLeft=1; sound('jump');
+    } else {
+      cat.vy = -13; cat.jumpsLeft=0; cat.rot = -Math.PI*2; sound('djump');
+      for(let i=0;i<6;i++) particles.push({x:cat.x+20, y:cat.y, vx:(Math.random()-.5)*5, vy:Math.random()*3+1, life:20, color:'#FFF'});
+    }
+  }
+}
+function startSlide(){
+  if(!playing || !cat.onGround) return;
+  cat.sliding = true;
+  cat.h = 24;
+}
+function stopSlide(){
+  if(!cat) return;
+  cat.sliding = false;
+  cat.h = 42;
+}
+
+const btnJump = document.getElementById('btnJump');
+const btnSlide = document.getElementById('btnSlide');
+btnJump.addEventListener('pointerdown', e => { e.preventDefault(); jump(); });
+btnSlide.addEventListener('pointerdown', e => { e.preventDefault(); startSlide(); });
+btnSlide.addEventListener('pointerup', e => { e.preventDefault(); stopSlide(); });
+btnSlide.addEventListener('pointercancel', stopSlide);
+
+c.addEventListener('pointerdown', e => { e.preventDefault(); jump(); });
+window.addEventListener('keydown', e => {
+  if(e.code==='Space' || e.code==='ArrowUp'){ e.preventDefault(); if(!playing) start(); else jump(); }
+  if(e.code==='ArrowDown') { e.preventDefault(); startSlide(); }
+});
+window.addEventListener('keyup', e => {
+  if(e.code==='ArrowDown') stopSlide();
+});
+document.getElementById('startBtn').addEventListener('click', e => { e.preventDefault(); initAudio(); start(); });
+
+function spawnObstacle(){
+  const r = Math.random();
+  if(r < 0.45){
+    obstacles.push({type:'box', x:W+60, y:groundY, w:38, h:38, passed:false});
+  } else if(r < 0.75){
+    const birdY = Math.random() < 0.5 ? groundY - 32 : groundY - 80;
+    obstacles.push({type:'bird', x:W+60, y:birdY, w:38, h:24, passed:false, flap:0});
+  } else {
+    obstacles.push({type:'robot', x:W+60, y:groundY, w:34, h:52, passed:false, step:0});
+  }
+}
+
+function spawnItem(){
+  const isCatnip = Math.random() < 0.22;
+  items.push({
+    type: isCatnip ? 'catnip' : 'fish',
+    x: W + 50,
+    y: groundY - 45 - Math.random()*50,
+    w: 28, h: 28,
+    float: 0
+  });
+}
+
+function drawCat(){
+  const {x,y,w,h} = cat;
+  ctx.save();
+  ctx.translate(x+w/2, y-h/2);
+
+  if(cat.frenzyTimer > 0){
+    ctx.shadowBlur = 15;
+    ctx.shadowColor = `hsl(${(time*12)%360}, 100%, 50%)`;
+  }
+
+  if(cat.sliding){
+    ctx.fillStyle = '#8D6E63'; ctx.fillRect(-w/2, -h/2, w, h);
+    ctx.strokeStyle = '#5D4037'; ctx.lineWidth = 2; ctx.strokeRect(-w/2, -h/2, w, h);
+    ctx.fillStyle = '#FFD54F'; ctx.beginPath(); ctx.arc(10, 0, 4, 0, 7); ctx.fill();
+    ctx.fillStyle = '#000'; ctx.beginPath(); ctx.arc(10, 0, 2, 0, 7); ctx.fill();
+    ctx.restore();
+    return;
+  }
+
+  ctx.rotate(cat.rot);
+  ctx.fillStyle = cat.frenzyTimer > 0 ? `hsl(${(time*10)%360}, 90%, 55%)` : '#FFA000';
+  ctx.beginPath(); ctx.ellipse(0, 0, w/2, h/2, 0, 0, 7); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(w*0.28, -h*0.25, w*0.28, h*0.28, 0, 0, 7); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(w*0.18, -h*0.45); ctx.lineTo(w*0.28, -h*0.8); ctx.lineTo(w*0.42, -h*0.45); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(w*0.38, -h*0.45); ctx.lineTo(w*0.52, -h*0.75); ctx.lineTo(w*0.56, -h*0.4); ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.beginPath(); ctx.arc(w*0.34, -h*0.3, 4, 0, 7); ctx.arc(w*0.48, -h*0.3, 4, 0, 7); ctx.fill();
+  ctx.fillStyle = '#222';
+  ctx.beginPath(); ctx.arc(w*0.35, -h*0.3, 2, 0, 7); ctx.arc(w*0.49, -h*0.3, 2, 0, 7); ctx.fill();
+  ctx.strokeStyle = '#E65100'; ctx.lineWidth = 3.5; ctx.lineCap = 'round';
+  const legSwing = cat.onGround ? Math.sin(time*0.35)*5 : -6;
+  ctx.beginPath(); ctx.moveTo(-w*0.15, h*0.3); ctx.lineTo(-w*0.15, h*0.55+legSwing); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(-w*0.3, h*0.3); ctx.lineTo(-w*0.35, h*0.55-legSwing); ctx.stroke();
+  ctx.restore();
+}
+
+function drawObstacles(o){
+  if(o.type==='box'){
+    ctx.fillStyle='#8D6E63'; ctx.fillRect(o.x, o.y-o.h, o.w, o.h);
+    ctx.strokeStyle='#5D4037'; ctx.lineWidth=3; ctx.strokeRect(o.x, o.y-o.h, o.w, o.h);
+  } else if(o.type==='bird'){
+    o.flap += 0.35;
+    ctx.font = '24px serif'; ctx.fillText('🦅', o.x, o.y);
+  } else {
+    ctx.fillStyle='#607D8B'; ctx.fillRect(o.x, o.y-o.h, o.w, o.h);
+    ctx.fillStyle='#FF1744'; ctx.fillRect(o.x+6, o.y-o.h+8, o.w-12, 8);
+  }
+}
+
+function drawItems(it){
+  it.float += 0.08;
+  const bob = Math.sin(it.float)*5;
+  ctx.font = '24px serif';
+  ctx.fillText(it.type === 'catnip' ? '🌿' : '🐟', it.x, it.y + bob);
+}
+
+function gameOver(){
+  playing=false; sound('hit');
+  for(let i=0;i<20;i++) particles.push({x:cat.x+20, y:cat.y-20, vx:(Math.random()-.5)*12, vy:(Math.random()-.5)*12, life:35, color:['#FF5252','#FFD740','#FFF'][i%3]});
+  const totalScore = score + (fishes * 5);
+  if(totalScore > best){ best = totalScore; saveBest(best); document.getElementById('best').textContent = best; }
+  
+  const ov = document.getElementById('overlay');
+  document.getElementById('ovTitle').textContent = '💥 พลาดท่าซะแล้ว!';
+  document.getElementById('ovDesc').innerHTML = `กระโดดผ่าน: ${score} ครั้ง<br>ปลาทู: ${fishes} ตัว (+${fishes*5} แต้ม)<br><b>รวมคะแนน: ${totalScore}</b>`;
+  document.getElementById('startBtn').textContent = 'เล่นอีกรอบ';
+  document.getElementById('frenzyBar').style.display = 'none';
+  ov.classList.remove('hidden');
+}
+
+function loop(){
+  time++;
+  ctx.clearRect(0,0,W,H);
+  ctx.fillStyle='#8BC34A'; ctx.fillRect(0, groundY, W, H-groundY);
+  ctx.fillStyle='#7CB342'; ctx.fillRect(0, groundY+10, W, H-groundY-10);
+
+  if(playing && cat){
+    cat.vy += 0.85; cat.y += cat.vy;
+    if(cat.y >= groundY){ cat.y = groundY; cat.vy = 0; cat.onGround = true; cat.jumpsLeft = 2; }
+    if(cat.rot < 0) cat.rot += 0.35;
+
+    if(cat.frenzyTimer > 0){
+      cat.frenzyTimer--;
+      document.getElementById('frenzyFill').style.width = (cat.frenzyTimer / 300 * 100) + '%';
+      if(cat.frenzyTimer === 0) document.getElementById('frenzyBar').style.display = 'none';
+    }
+
+    if(--spawnTimer <= 0){ spawnObstacle(); spawnTimer = Math.max(45, 90 - score*1.1 + Math.random()*25); }
+    if(--itemTimer <= 0){ spawnItem(); itemTimer = 110 + Math.random()*80; }
+
+    for(let i = obstacles.length - 1; i >= 0; i--){
+      const o = obstacles[i]; o.x -= speed;
+      if(!o.passed && o.x + o.w < cat.x){
+        o.passed = true; score++; document.getElementById('score').textContent = score;
+        if(score % 10 === 0) speed += 0.5;
+      }
+      const oy = o.type==='bird' ? o.y - 20 : o.y - o.h;
+      if(cat.x + cat.w*0.8 > o.x && cat.x + cat.w*0.2 < o.x + o.w && cat.y - cat.h < oy + o.h && cat.y > oy){
+        if(cat.frenzyTimer > 0){
+          sound('smash');
+          for(let p=0;p<8;p++) particles.push({x:o.x, y:oy, vx:(Math.random()-.5)*8, vy:-Math.random()*6, life:20, color:'#FF9800'});
+          obstacles.splice(i, 1); score += 2;
+        } else {
+          gameOver(); break;
+        }
+      }
+    }
+    for(let i = items.length - 1; i >= 0; i--){
+      const it = items[i]; it.x -= speed;
+      if(cat.x + cat.w > it.x && cat.x < it.x + it.w && cat.y - cat.h < it.y + 10 && cat.y > it.y - 20){
+        if(it.type === 'fish'){ fishes++; sound('fish'); document.getElementById('fishCount').textContent = fishes; }
+        else { cat.frenzyTimer = 300; document.getElementById('frenzyBar').style.display = 'block'; sound('catnip'); }
+        items.splice(i, 1);
+      }
+    }
+    obstacles = obstacles.filter(o => o.x > -80); items = items.filter(it => it.x > -60);
+  }
+
+  obstacles && obstacles.forEach(drawObstacles); items && items.forEach(drawItems);
+  if(cat) drawCat();
+
+  particles = (particles||[]).filter(p=>p.life>0);
+  particles.forEach(p=>{
+    p.x+=p.vx; p.y+=p.vy; p.life--;
+    ctx.fillStyle=p.color; ctx.fillRect(p.x,p.y,4,4);
+  });
+
+  requestAnimationFrame(loop);
+}
+loop();
+</script>
+</body>
+</html>
